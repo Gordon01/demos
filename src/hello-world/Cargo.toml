@@ -1,0 +1,6 @@
+[package]
+name = "hello-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A Rust hello-world demo"
