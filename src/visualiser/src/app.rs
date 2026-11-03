@@ -2,11 +2,20 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 
-use crate::{analysis::Analyzer, audio::Playback, visualization};
+use crate::{analysis::Analyzer, audio::Playback, system_audio::SystemAudioCapture, visualization};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum AudioSource {
+    #[default]
+    File,
+    System,
+}
 
 /// Coordinates audio playback, frequency analysis, settings, and visualization windows.
 pub(crate) struct VisualiserApp {
     playback: Playback,
+    system_capture: SystemAudioCapture,
+    source: AudioSource,
     analyzer: Analyzer,
     settings_open: bool,
     visualisation_open: bool,
@@ -27,6 +36,8 @@ impl VisualiserApp {
             .to_owned();
         Self {
             playback,
+            system_capture: SystemAudioCapture::new(),
+            source: AudioSource::File,
             analyzer: Analyzer::new(36, 20.0, 16_000.0),
             settings_open: true,
             visualisation_open: true,
@@ -42,18 +53,40 @@ impl VisualiserApp {
     /// Draws settings and applies file selection, playback controls, and band changes.
     fn draw_controls(&mut self, ctx: &egui::Context) {
         let mut settings_open = self.settings_open;
+        let mut selected_source = self.source;
         egui::Window::new("Audio and Settings")
             .open(&mut settings_open)
             .default_pos([16.0, 16.0])
-            .default_size([360.0, 420.0])
+            .default_size([380.0, 480.0])
             .show(ctx, |ui| {
-                if ui.button("Open audio file...").clicked()
+                egui::ComboBox::from_label("Audio source")
+                    .selected_text(match selected_source {
+                        AudioSource::File => "Audio file",
+                        AudioSource::System => "System output",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut selected_source, AudioSource::File, "Audio file");
+                        ui.add_enabled_ui(SystemAudioCapture::is_supported(), |ui| {
+                            ui.selectable_value(
+                                &mut selected_source,
+                                AudioSource::System,
+                                "System output",
+                            );
+                        });
+                    });
+                if !SystemAudioCapture::is_supported() {
+                    ui.small("System output capture requires macOS 14.2 or newer.");
+                }
+
+                if selected_source == AudioSource::File
+                    && ui.button("Open audio file...").clicked()
                     && let Some(path) = rfd::FileDialog::new()
                         .add_filter("Audio files", &["wav", "mp3", "flac", "ogg"])
                         .pick_file()
                 {
                     match self.playback.load(&path) {
                         Ok(()) => {
+                            self.switch_source(AudioSource::File);
                             self.analyzer.clear_history();
                             if let Some(audio) = self.playback.audio() {
                                 self.status = format!(
@@ -68,57 +101,102 @@ impl VisualiserApp {
                     }
                 }
 
-                ui.horizontal(|ui| {
-                    let button = if self.playback.is_playing() {
-                        "Pause"
-                    } else {
-                        "Play"
-                    };
-                    if ui
-                        .add_enabled(self.playback.audio().is_some(), egui::Button::new(button))
-                        .clicked()
-                    {
-                        if self.playback.is_playing() {
-                            self.playback.pause();
-                            self.status = "Paused.".into();
-                        } else {
-                            match self.playback.play() {
-                                Ok(()) => self.status = "Playing.".into(),
-                                Err(error) => self.status = error,
+                match selected_source {
+                    AudioSource::File => {
+                        ui.horizontal(|ui| {
+                            let button = if self.playback.is_playing() {
+                                "Pause"
+                            } else {
+                                "Play"
+                            };
+                            if ui
+                                .add_enabled(
+                                    self.playback.audio().is_some(),
+                                    egui::Button::new(button),
+                                )
+                                .clicked()
+                            {
+                                if self.playback.is_playing() {
+                                    self.playback.pause();
+                                    self.status = "Paused.".into();
+                                } else {
+                                    match self.playback.play() {
+                                        Ok(()) => self.status = "Playing.".into(),
+                                        Err(error) => self.status = error,
+                                    }
+                                }
                             }
+                            if ui
+                                .add_enabled(
+                                    self.playback.audio().is_some(),
+                                    egui::Button::new("Stop"),
+                                )
+                                .clicked()
+                            {
+                                self.playback.stop();
+                                self.status = "Stopped.".into();
+                            }
+                        });
+
+                        if let Some((duration, path)) = self
+                            .playback
+                            .audio()
+                            .map(|audio| (audio.duration(), audio.path().display().to_string()))
+                        {
+                            let mut seek = self.playback.position().min(duration);
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut seek, 0.0..=duration)
+                                        .show_value(false)
+                                        .text(format!(
+                                            "{:.1}s / {:.1}s",
+                                            self.playback.position(),
+                                            duration
+                                        )),
+                                )
+                                .changed()
+                                && let Err(error) = self.playback.seek(seek)
+                            {
+                                self.status = error;
+                            }
+                            ui.label(path);
                         }
                     }
-                    if ui
-                        .add_enabled(self.playback.audio().is_some(), egui::Button::new("Stop"))
-                        .clicked()
-                    {
-                        self.playback.stop();
-                        self.status = "Stopped.".into();
+                    AudioSource::System => {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    SystemAudioCapture::is_supported()
+                                        && !self.system_capture.is_running(),
+                                    egui::Button::new("Start capture"),
+                                )
+                                .clicked()
+                            {
+                                self.analyzer.clear_history();
+                                match self.system_capture.start() {
+                                    Ok(()) => self.status = "Capturing system output.".into(),
+                                    Err(error) => self.status = error,
+                                }
+                            }
+                            if ui
+                                .add_enabled(
+                                    self.system_capture.is_running(),
+                                    egui::Button::new("Stop capture"),
+                                )
+                                .clicked()
+                            {
+                                self.analyzer.clear_history();
+                                self.status = self
+                                    .system_capture
+                                    .stop()
+                                    .map(|()| "System-audio capture stopped.".into())
+                                    .unwrap_or_else(|error| error);
+                            }
+                        });
+                        if let Some(sample_rate) = self.system_capture.sample_rate() {
+                            ui.label(format!("Capture sample rate: {sample_rate} Hz"));
+                        }
                     }
-                });
-
-                if let Some((duration, path)) = self
-                    .playback
-                    .audio()
-                    .map(|audio| (audio.duration(), audio.path().display().to_string()))
-                {
-                    let mut seek = self.playback.position().min(duration);
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut seek, 0.0..=duration)
-                                .show_value(false)
-                                .text(format!(
-                                    "{:.1}s / {:.1}s",
-                                    self.playback.position(),
-                                    duration
-                                )),
-                        )
-                        .changed()
-                        && let Err(error) = self.playback.seek(seek)
-                    {
-                        self.status = error;
-                    }
-                    ui.label(path);
                 }
 
                 ui.separator();
@@ -172,6 +250,29 @@ impl VisualiserApp {
                 ui.checkbox(&mut self.visualisation_open, "Show visualisation");
             });
         self.settings_open = settings_open;
+        self.switch_source(selected_source);
+    }
+
+    fn switch_source(&mut self, source: AudioSource) {
+        if self.source == source {
+            return;
+        }
+        let stop_error = self
+            .system_capture
+            .is_running()
+            .then(|| self.system_capture.stop())
+            .and_then(Result::err);
+        if source == AudioSource::System {
+            self.playback.stop();
+            self.status = stop_error
+                .unwrap_or_else(|| "System output selected. Start capture to visualize it.".into());
+        } else if self.playback.audio().is_none() {
+            self.status = stop_error.unwrap_or_else(|| "Open an audio file to begin.".into());
+        } else {
+            self.status = stop_error.unwrap_or_else(|| "Audio file selected.".into());
+        }
+        self.source = source;
+        self.analyzer.clear_history();
     }
 }
 
@@ -187,14 +288,38 @@ impl eframe::App for VisualiserApp {
             self.status = "Playback finished.".into();
         }
 
-        if self.playback.is_playing()
-            && let Some(audio) = self.playback.audio()
-        {
-            let center_sample = (self.playback.position() * audio.sample_rate() as f32) as usize;
-            let intensities =
-                self.analyzer
-                    .analyze(audio.mono_samples(), center_sample, audio.sample_rate());
-            self.analyzer.advance(&intensities, delta_seconds);
+        match self.source {
+            AudioSource::File => {
+                if self.playback.is_playing()
+                    && let Some(audio) = self.playback.audio()
+                {
+                    let center_sample =
+                        (self.playback.position() * audio.sample_rate() as f32) as usize;
+                    let intensities = self.analyzer.analyze(
+                        audio.mono_samples(),
+                        center_sample,
+                        audio.sample_rate(),
+                    );
+                    self.analyzer.advance(&intensities, delta_seconds);
+                }
+            }
+            AudioSource::System => {
+                if self.system_capture.is_running()
+                    && let Some((samples, sample_rate)) = self.system_capture.latest_samples()
+                {
+                    let intensities =
+                        self.analyzer
+                            .analyze(&samples, samples.len() / 2, sample_rate);
+                    self.analyzer.advance(&intensities, delta_seconds);
+                }
+                if let Some(error) = self.system_capture.take_error() {
+                    self.status = match self.system_capture.stop() {
+                        Ok(()) => error,
+                        Err(stop_error) => format!("{error} {stop_error}"),
+                    };
+                    self.analyzer.clear_history();
+                }
+            }
         }
 
         egui::TopBottomPanel::top("window_controls").show(ctx, |ui| {
@@ -213,7 +338,10 @@ impl eframe::App for VisualiserApp {
                 ctx,
                 &mut self.visualisation_open,
                 self.analyzer.bands(),
-                self.playback.audio().is_some(),
+                match self.source {
+                    AudioSource::File => self.playback.audio().is_some(),
+                    AudioSource::System => self.system_capture.is_running(),
+                },
                 self.layout,
             );
         }

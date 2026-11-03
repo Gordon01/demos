@@ -19,3 +19,10 @@ eframe = { version = "0.31", default-features = false, features = [
   "wayland",
   "x11",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cidre = { version = "0.29", default-features = false, features = [
+  "core_audio",
+  "dispatch",
+  "macos_14_2",
+] }

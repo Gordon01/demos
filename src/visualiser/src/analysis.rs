@@ -2,7 +2,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use rustfft::{Fft, FftPlanner, num_complex::Complex};
 
-const FFT_SIZE: usize = 4096;
+pub(crate) const FFT_SIZE: usize = 4096;
 pub(crate) const HISTORY_LIMIT: usize = 1200;
 const ACTIVE_THRESHOLD: f32 = 0.025;
 const MAX_SCROLL_SPEED: f32 = 320.0;

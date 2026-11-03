@@ -78,7 +78,7 @@ pub(crate) fn show(
                 painter.text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    "Open an audio file to visualize its frequency bands",
+                    "Start playback or system-audio capture to visualize frequency bands",
                     egui::FontId::proportional(17.0),
                     egui::Color32::LIGHT_GRAY,
                 );

@@ -1,6 +1,7 @@
 mod analysis;
 mod app;
 mod audio;
+mod system_audio;
 mod visualization;
 
 use eframe::egui;
