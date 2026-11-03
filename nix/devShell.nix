@@ -4,15 +4,19 @@
     { config, pkgs, ... }:
     {
       devShells.default = pkgs.mkShell {
-        packages = with pkgs; [
-          clippy
-          rustfmt
-        ];
+        packages =
+          with pkgs;
+          [
+            clippy
+            rustfmt
+          ]
+          ++ lib.optionals stdenv.hostPlatform.isLinux [ python3 ];
 
         inputsFrom = [
           config.packages.hello-world
           config.packages.visualiser
-        ];
+        ]
+        ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ config.packages.memfd ];
 
         RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
         LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
