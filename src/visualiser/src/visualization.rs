@@ -1,13 +1,17 @@
+use std::collections::VecDeque;
+
 use eframe::egui;
 
 use crate::analysis::{FrequencyBand, HISTORY_LIMIT};
 
+const LANE_BACKGROUND: egui::Color32 = egui::Color32::from_rgb(18, 12, 18);
+
 /// Direction in which the band history moves across the plot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ScrollDirection {
-    #[default]
     Left,
     Right,
+    #[default]
     Up,
     Down,
 }
@@ -22,10 +26,6 @@ impl ScrollDirection {
             Self::Up => "Up",
             Self::Down => "Down",
         }
-    }
-
-    fn is_horizontal(self) -> bool {
-        matches!(self, Self::Left | Self::Right)
     }
 }
 
@@ -54,16 +54,25 @@ pub(crate) fn show(
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(10, 9, 15));
 
-            for (index, band) in bands.iter().enumerate() {
-                let lane = band_lane(rect, layout, index, bands.len());
-                painter.rect_filled(lane, 0.0, egui::Color32::from_rgb(18, 12, 18));
-
-                let history = band.history();
-                for (column, intensity) in history.iter().enumerate() {
-                    let age = history.len() - 1 - column;
-                    let cell = history_cell(lane, layout.direction, age);
-                    painter.rect_filled(cell, 0.0, flame_color(*intensity));
+            if !bands.is_empty() {
+                let image = history_image(bands.iter().map(FrequencyBand::history));
+                let mut mesh = egui::Mesh::with_texture(history_texture(ctx, image));
+                let corners = [
+                    rect.left_top(),
+                    rect.right_top(),
+                    rect.right_bottom(),
+                    rect.left_bottom(),
+                ];
+                for (pos, uv) in corners.into_iter().zip(quad_uvs(layout)) {
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos,
+                        uv,
+                        color: egui::Color32::WHITE,
+                    });
                 }
+                mesh.add_triangle(0, 1, 2);
+                mesh.add_triangle(0, 2, 3);
+                painter.add(mesh);
             }
             if !audio_loaded {
                 painter.text(
@@ -77,60 +86,62 @@ pub(crate) fn show(
         });
 }
 
-/// Returns the strip of `rect` occupied by one band; low bands start at bottom or left by default.
-fn band_lane(rect: egui::Rect, layout: Layout, index: usize, count: usize) -> egui::Rect {
-    let count = count.max(1) as f32;
-    let index = index as f32;
-    if layout.direction.is_horizontal() {
-        let height = rect.height() / count;
-        let y = if layout.reverse_bands {
-            rect.top() + index * height
-        } else {
-            rect.bottom() - (index + 1.0) * height
-        };
-        egui::Rect::from_min_size(
-            egui::pos2(rect.left(), y),
-            egui::vec2(rect.width(), height.max(1.0)),
-        )
-    } else {
-        let width = rect.width() / count;
-        let x = if layout.reverse_bands {
-            rect.right() - (index + 1.0) * width
-        } else {
-            rect.left() + index * width
-        };
-        egui::Rect::from_min_size(
-            egui::pos2(x, rect.top()),
-            egui::vec2(width.max(1.0), rect.height()),
-        )
+/// Uploads the image into a texture kept in egui memory, skipping unchanged images.
+fn history_texture(ctx: &egui::Context, image: egui::ColorImage) -> egui::TextureId {
+    let id = egui::Id::new("band-history-texture");
+    let options = egui::TextureOptions::NEAREST;
+    let cached = ctx
+        .data(|data| data.get_temp::<(egui::TextureHandle, std::sync::Arc<egui::ColorImage>)>(id));
+    let texture = match cached {
+        Some((texture, previous)) if *previous == image => return texture.id(),
+        Some((mut texture, _)) => {
+            texture.set(image.clone(), options);
+            texture
+        }
+        None => ctx.load_texture("band-history", image.clone(), options),
+    };
+    ctx.data_mut(|data| data.insert_temp(id, (texture.clone(), std::sync::Arc::new(image))));
+    texture.id()
+}
+
+/// Builds an image with one row per band (lowest first) and the newest slice in the last column.
+fn history_image<'a>(
+    histories: impl ExactSizeIterator<Item = &'a VecDeque<f32>>,
+) -> egui::ColorImage {
+    let height = histories.len();
+    let mut pixels = Vec::with_capacity(height * HISTORY_LIMIT);
+    for history in histories {
+        let shown = history.len().min(HISTORY_LIMIT);
+        pixels.extend(std::iter::repeat_n(LANE_BACKGROUND, HISTORY_LIMIT - shown));
+        pixels.extend(
+            history
+                .range(history.len() - shown..)
+                .map(|intensity| flame_color(*intensity)),
+        );
+    }
+    egui::ColorImage {
+        size: [HISTORY_LIMIT, height],
+        pixels,
     }
 }
 
-/// Returns the cell within a band lane for a slice `age` frames older than the newest one.
-fn history_cell(lane: egui::Rect, direction: ScrollDirection, age: usize) -> egui::Rect {
-    let age = age as f32;
-    // Cells are rounded up to avoid gaps; the extra size extends toward older slices.
-    let (x, y) = (lane.x_range(), lane.y_range());
-    let step = |length: f32| length / HISTORY_LIMIT as f32;
-    let (x, y) = match direction {
-        ScrollDirection::Left => {
-            let max = lane.right() - age * step(lane.width());
-            (egui::Rangef::new(max - step(lane.width()).ceil(), max), y)
-        }
-        ScrollDirection::Right => {
-            let min = lane.left() + age * step(lane.width());
-            (egui::Rangef::new(min, min + step(lane.width()).ceil()), y)
-        }
-        ScrollDirection::Up => {
-            let max = lane.bottom() - age * step(lane.height());
-            (x, egui::Rangef::new(max - step(lane.height()).ceil(), max))
-        }
-        ScrollDirection::Down => {
-            let min = lane.top() + age * step(lane.height());
-            (x, egui::Rangef::new(min, min + step(lane.height()).ceil()))
-        }
-    };
-    egui::Rect::from_x_y_ranges(x, y)
+/// Returns texture coordinates for the plot's top-left, top-right, bottom-right and
+/// bottom-left corners; `u` runs oldest to newest and `v` lowest to highest band.
+fn quad_uvs(layout: Layout) -> [egui::Pos2; 4] {
+    [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].map(|(x, y): (f32, f32)| {
+        let (time, band) = match layout.direction {
+            ScrollDirection::Left => (x, 1.0 - y),
+            ScrollDirection::Right => (1.0 - x, 1.0 - y),
+            ScrollDirection::Up => (y, x),
+            ScrollDirection::Down => (1.0 - y, x),
+        };
+        let band = if layout.reverse_bands {
+            1.0 - band
+        } else {
+            band
+        };
+        egui::pos2(time, band)
+    })
 }
 
 /// Maps clamped intensity to a flame gradient from dark red to pale yellow.
@@ -160,9 +171,7 @@ fn flame_color(intensity: f32) -> egui::Color32 {
 mod tests {
     use super::*;
 
-    fn plot() -> egui::Rect {
-        egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1200.0, 600.0))
-    }
+    const CORNERS: [(f32, f32); 4] = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
 
     fn layout(direction: ScrollDirection, reverse_bands: bool) -> Layout {
         Layout {
@@ -171,37 +180,63 @@ mod tests {
         }
     }
 
+    /// Returns the texture coordinate at a normalised plot corner.
+    fn uv_at(layout: Layout, x: f32, y: f32) -> egui::Pos2 {
+        let index = CORNERS.iter().position(|corner| *corner == (x, y)).unwrap();
+        quad_uvs(layout)[index]
+    }
+
     #[test]
     fn newest_slice_appears_opposite_to_motion() {
-        let rect = plot();
-        for direction in ScrollDirection::ALL {
-            let lane = band_lane(rect, layout(direction, false), 0, 4);
-            let newest = history_cell(lane, direction, 0);
-            let older = history_cell(lane, direction, 10);
-            let (origin, newest_edge, older_edge) = match direction {
-                ScrollDirection::Left => (rect.right(), newest.right(), older.right()),
-                ScrollDirection::Right => (rect.left(), newest.left(), older.left()),
-                ScrollDirection::Up => (rect.bottom(), newest.bottom(), older.bottom()),
-                ScrollDirection::Down => (rect.top(), newest.top(), older.top()),
-            };
-            assert_eq!(newest_edge, origin, "{direction:?}");
-            assert!(
-                (older_edge - origin).abs() > (newest_edge - origin).abs(),
-                "{direction:?}"
-            );
+        for reverse in [false, true] {
+            for direction in ScrollDirection::ALL {
+                let layout = layout(direction, reverse);
+                let newest_corners = match direction {
+                    ScrollDirection::Left => [(1.0, 0.0), (1.0, 1.0)],
+                    ScrollDirection::Right => [(0.0, 0.0), (0.0, 1.0)],
+                    ScrollDirection::Up => [(0.0, 1.0), (1.0, 1.0)],
+                    ScrollDirection::Down => [(0.0, 0.0), (1.0, 0.0)],
+                };
+                for (x, y) in newest_corners {
+                    assert_eq!(uv_at(layout, x, y).x, 1.0, "{direction:?} {reverse}");
+                    assert_eq!(uv_at(layout, 1.0 - x, 1.0 - y).x, 0.0, "{direction:?}");
+                }
+            }
         }
     }
 
     #[test]
     fn band_order_follows_orientation_and_reversal() {
-        let rect = plot();
-        let low = |direction, reverse| band_lane(rect, layout(direction, reverse), 0, 4);
-        assert_eq!(low(ScrollDirection::Left, false).bottom(), rect.bottom());
-        assert_eq!(low(ScrollDirection::Right, true).top(), rect.top());
-        assert_eq!(low(ScrollDirection::Up, false).left(), rect.left());
-        assert_eq!(low(ScrollDirection::Down, true).right(), rect.right());
-        assert_eq!(low(ScrollDirection::Up, false).height(), rect.height());
-        assert_eq!(low(ScrollDirection::Left, false).width(), rect.width());
+        let low = |direction, reverse, x, y| uv_at(layout(direction, reverse), x, y).y == 0.0;
+        assert!(low(ScrollDirection::Left, false, 0.0, 1.0));
+        assert!(low(ScrollDirection::Left, false, 1.0, 1.0));
+        assert!(low(ScrollDirection::Right, true, 0.0, 0.0));
+        assert!(low(ScrollDirection::Right, true, 1.0, 0.0));
+        assert!(low(ScrollDirection::Up, false, 0.0, 0.0));
+        assert!(low(ScrollDirection::Up, false, 0.0, 1.0));
+        assert!(low(ScrollDirection::Down, true, 1.0, 0.0));
+        assert!(low(ScrollDirection::Down, true, 1.0, 1.0));
+    }
+
+    #[test]
+    fn history_image_aligns_newest_slices_to_the_last_column() {
+        let full: VecDeque<f32> = (0..HISTORY_LIMIT + 5).map(|_| 0.0).chain([1.0]).collect();
+        let histories = [VecDeque::from([1.0, 0.0]), VecDeque::new(), full];
+        let image = history_image(histories.iter());
+        assert_eq!(image.size, [HISTORY_LIMIT, 3]);
+        let row = |index: usize| &image.pixels[index * HISTORY_LIMIT..(index + 1) * HISTORY_LIMIT];
+        assert!(
+            row(0)[..HISTORY_LIMIT - 2]
+                .iter()
+                .all(|pixel| *pixel == LANE_BACKGROUND)
+        );
+        assert_eq!(
+            row(0)[HISTORY_LIMIT - 2..],
+            [flame_color(1.0), flame_color(0.0)]
+        );
+        assert!(row(1).iter().all(|pixel| *pixel == LANE_BACKGROUND));
+        assert_eq!(row(2)[HISTORY_LIMIT - 1], flame_color(1.0));
+        assert_eq!(row(2)[0], flame_color(0.0));
     }
 
     #[test]
