@@ -9,7 +9,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -28,10 +27,6 @@ constexpr std::string_view expected_reply = "HELLO FROM THE C++ CLIENT";
 static_assert(greeting.size() <= max_payload);
 
 [[noreturn]] void system_error(const char *operation) {
-  if (errno == EAGAIN || errno == EWOULDBLOCK) {
-    throw std::runtime_error(std::string(operation) +
-                             ": I/O timed out after 5 seconds");
-  }
   throw std::system_error(errno, std::generic_category(), operation);
 }
 
@@ -85,13 +80,6 @@ Fd connect_to_server(const std::string &path) {
   if (socket.get() < 0) {
     system_error("socket");
   }
-  const timeval timeout{5, 0};
-  if (::setsockopt(socket.get(), SOL_SOCKET, SO_RCVTIMEO, &timeout,
-                   sizeof(timeout)) < 0 ||
-      ::setsockopt(socket.get(), SOL_SOCKET, SO_SNDTIMEO, &timeout,
-                   sizeof(timeout)) < 0) {
-    system_error("setsockopt");
-  }
   const auto length =
       static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path.size() + 1);
   int result;
@@ -136,53 +124,42 @@ void expect_done(const Fd &socket) {
 }
 
 Fd receive_buffer(const Fd &socket) {
-  alignas(cmsghdr) std::array<unsigned char, CMSG_SPACE(4 * sizeof(int))>
-      control{};
-  std::vector<Fd> descriptors;
-  descriptors.reserve(control.size() / sizeof(int));
+  alignas(cmsghdr) std::array<unsigned char, CMSG_SPACE(sizeof(int))> control{};
   char marker{};
   iovec data{&marker, 1};
   msghdr message{};
   message.msg_iov = &data;
   message.msg_iovlen = 1;
   message.msg_control = control.data();
+  message.msg_controllen = control.size();
   ssize_t count;
   do {
-    message.msg_controllen = control.size();
-    message.msg_flags = 0;
     count = ::recvmsg(socket.get(), &message, MSG_CMSG_CLOEXEC);
   } while (count < 0 && errno == EINTR);
   if (count < 0) {
     system_error("receive buffer");
   }
 
-  bool unexpected = false;
-  for (auto *header = CMSG_FIRSTHDR(&message); header != nullptr;
-       header = CMSG_NXTHDR(&message, header)) {
-    if (header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS ||
-        header->cmsg_len < CMSG_LEN(0)) {
-      unexpected = true;
-      continue;
-    }
-    const auto size = header->cmsg_len - CMSG_LEN(0);
-    for (std::size_t offset = 0; offset + sizeof(int) <= size;
-         offset += sizeof(int)) {
-      int descriptor;
-      std::memcpy(&descriptor, CMSG_DATA(header) + offset, sizeof(descriptor));
-      descriptors.emplace_back(descriptor);
-    }
-    unexpected = unexpected || size % sizeof(int) != 0;
+  auto *header = CMSG_FIRSTHDR(&message);
+  int descriptor = -1;
+  const bool has_descriptor = header != nullptr &&
+                              header->cmsg_level == SOL_SOCKET &&
+                              header->cmsg_type == SCM_RIGHTS &&
+                              header->cmsg_len >= CMSG_LEN(sizeof(descriptor));
+  if (has_descriptor) {
+    std::memcpy(&descriptor, CMSG_DATA(header), sizeof(descriptor));
   }
-  // Adopt all delivered descriptors before rejecting a malformed/truncated
-  // message.
+  Fd fd(descriptor);
   if ((message.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0) {
     throw std::runtime_error("truncated buffer descriptor message");
   }
-  if (count != 1 || marker != 'F' || unexpected || descriptors.size() != 1) {
+  if (count != 1 || marker != 'F' || !has_descriptor ||
+      header->cmsg_len != CMSG_LEN(sizeof(descriptor)) ||
+      CMSG_NXTHDR(&message, header) != nullptr) {
     throw std::runtime_error(
         "expected control 'F' with exactly one buffer descriptor");
   }
-  return std::move(descriptors.front());
+  return fd;
 }
 
 void validate_buffer(const Fd &fd) {

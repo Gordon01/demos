@@ -9,12 +9,10 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 const BUFFER_SIZE: usize = 4096;
 const HEADER_SIZE: usize = 4;
 const MAX_PAYLOAD: usize = BUFFER_SIZE - HEADER_SIZE;
-const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Removes only the filesystem socket created by this server.
 struct SocketCleanup {
@@ -115,15 +113,9 @@ fn send_buffer(stream: &UnixStream, file: &File) -> io::Result<()> {
 fn expect_control(stream: &mut UnixStream, expected: u8) -> io::Result<()> {
     let mut message = [0];
     stream.read_exact(&mut message).map_err(|error| {
-        let detail = match error.kind() {
-            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
-                "I/O timed out after 5 seconds".to_owned()
-            }
-            _ => error.to_string(),
-        };
         io::Error::new(
             error.kind(),
-            format!("waiting for '{}': {detail}", char::from(expected)),
+            format!("waiting for '{}': {error}", char::from(expected)),
         )
     })?;
     if message[0] != expected {
@@ -151,8 +143,6 @@ fn payload_length(header: [u8; HEADER_SIZE]) -> io::Result<usize> {
 }
 
 fn exchange(mut stream: UnixStream) -> io::Result<()> {
-    stream.set_read_timeout(Some(IO_TIMEOUT))?;
-    stream.set_write_timeout(Some(IO_TIMEOUT))?;
     expect_control(&mut stream, b'B')?;
     let (file, mut mapping) = create_buffer()?;
     send_buffer(&stream, &file)?;

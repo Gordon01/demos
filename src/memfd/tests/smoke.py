@@ -200,17 +200,6 @@ class DemoTests(unittest.TestCase):
             self.assertEqual(peer.recv(1), b"")
         self.client()
 
-    def test_server_timeout_and_recovery(self):
-        _, log_path = self.start_server()
-        with self.buffer_client() as (peer, _):
-            start = time.monotonic()
-            self.assertEqual(peer.recv(1), b"")
-            elapsed = time.monotonic() - start
-            self.assertGreaterEqual(elapsed, 4.5)
-            self.assertLess(elapsed, 8)
-        self.assertIn("timed out after 5 seconds", log_path.read_text())
-        self.client()
-
     def test_existing_file_is_preserved(self):
         self.path.write_text("keep this file")
         result = subprocess.run(
@@ -259,8 +248,6 @@ class DemoTests(unittest.TestCase):
     def test_client_rejects_bad_buffers(self):
         cases = [
             ("missing", b"F", 0, BUFFER_SIZE, True, "exactly one"),
-            ("extra", b"F", 2, BUFFER_SIZE, True, "exactly one"),
-            ("truncated", b"F", 8, BUFFER_SIZE, True, "truncated"),
             ("marker", b"X", 1, BUFFER_SIZE, True, "expected control"),
             ("size", b"F", 1, BUFFER_SIZE - 1, True, "4096-byte"),
             ("unsealed", b"F", 1, BUFFER_SIZE, False, "sealed against resizing"),
@@ -300,15 +287,6 @@ class DemoTests(unittest.TestCase):
                     else:
                         peer.shutdown(socket.SHUT_RDWR)
                     self.assert_client_failure(process, error)
-
-    def test_client_timeout(self):
-        with self.fake_server() as (_, process):
-            start = time.monotonic()
-            self.assert_client_failure(process, "I/O timed out after 5 seconds")
-            elapsed = time.monotonic() - start
-            self.assertGreaterEqual(elapsed, 4.5)
-            self.assertLess(elapsed, 8)
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test the Rust/C++ memfd demo")

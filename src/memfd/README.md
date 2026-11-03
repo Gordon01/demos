@@ -66,10 +66,10 @@ Neither side accesses the payload during the other's turn. Shared mappings are
 coherent without `msync`; no atomics are needed for this single-writer-at-a-time
 protocol. Resizing is sealed, but writes remain permitted.
 
-Both programs use five-second read/write timeouts. A failed, disconnected, or
-stalled client is reported on the server's stderr and does not stop the accept
-loop. Client failures are reported on stderr with a nonzero exit status.
-Descriptors and mappings are released after each exchange.
+A failed or disconnected client is reported on the server's stderr and does not
+stop the accept loop. A stalled client can block the server until it completes
+or disconnects. Client failures are reported on stderr with a nonzero exit
+status. Descriptors and mappings are released after each exchange.
 
 This is a cooperative local demo, not a protocol for hostile peers: a peer that
 ignores the ownership handoff could race accesses to the mapping. "Zero-copy"
@@ -92,8 +92,9 @@ python3 src/memfd/tests/smoke.py target/debug/memfd-server target/memfd-client
 ```
 
 The smoke test runs both real programs, exercises repeated clients and payload
-bounds, checks malformed peers and timeouts, and verifies socket cleanup. It uses
-only the Python standard library and isolated temporary socket paths.
+bounds, checks basic protocol and buffer validation, and verifies socket
+cleanup. It uses only the Python standard library and isolated temporary socket
+paths.
 
 ```sh
 nix fmt
