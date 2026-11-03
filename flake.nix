@@ -15,7 +15,6 @@
     inputs:
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       imports = [
-        inputs.flake-parts.flakeModules.flakeModules
         (inputs.import-tree [
           ./nix
           ./src
