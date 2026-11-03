@@ -15,6 +15,7 @@ pub(crate) struct VisualiserApp {
     band_count_setting: usize,
     min_frequency_setting: f32,
     max_frequency_setting: f32,
+    layout: visualization::Layout,
 }
 
 impl VisualiserApp {
@@ -34,6 +35,7 @@ impl VisualiserApp {
             band_count_setting: 36,
             min_frequency_setting: 20.0,
             max_frequency_setting: 16_000.0,
+            layout: visualization::Layout::default(),
         }
     }
 
@@ -151,6 +153,21 @@ impl VisualiserApp {
                 }
 
                 ui.separator();
+                ui.heading("Visualisation");
+                egui::ComboBox::from_label("Animation direction")
+                    .selected_text(self.layout.direction.label())
+                    .show_ui(ui, |ui| {
+                        for direction in visualization::ScrollDirection::ALL {
+                            ui.selectable_value(
+                                &mut self.layout.direction,
+                                direction,
+                                direction.label(),
+                            );
+                        }
+                    });
+                ui.checkbox(&mut self.layout.reverse_bands, "Reverse band order");
+
+                ui.separator();
                 ui.label(&self.status);
                 ui.checkbox(&mut self.visualisation_open, "Show visualisation");
             });
@@ -197,6 +214,7 @@ impl eframe::App for VisualiserApp {
                 &mut self.visualisation_open,
                 self.analyzer.bands(),
                 self.playback.audio().is_some(),
+                self.layout,
             );
         }
         ctx.request_repaint_after(Duration::from_millis(16));
