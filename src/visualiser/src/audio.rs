@@ -4,15 +4,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source, buffer::SamplesBuffer};
+use rodio::{
+    ChannelCount, Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source,
+    buffer::SamplesBuffer,
+};
 
 /// Stores interleaved samples for playback and a mono mix for frequency analysis.
 pub(crate) struct AudioFile {
     path: PathBuf,
     samples: Vec<f32>,
     mono_samples: Vec<f32>,
-    channels: u16,
-    sample_rate: u32,
+    channels: ChannelCount,
+    sample_rate: SampleRate,
 }
 
 impl AudioFile {
@@ -31,17 +34,14 @@ impl AudioFile {
             .map_err(|error| format!("Could not decode audio file: {error}"))?;
         let channels = decoder.channels();
         let sample_rate = decoder.sample_rate();
-        if channels == 0 || sample_rate == 0 {
-            return Err("The audio file has invalid channel or sample-rate information.".into());
-        }
 
-        let samples: Vec<f32> = decoder.convert_samples::<f32>().collect();
-        if samples.is_empty() || !samples.len().is_multiple_of(usize::from(channels)) {
+        let samples: Vec<f32> = decoder.collect();
+        if samples.is_empty() || !samples.len().is_multiple_of(usize::from(channels.get())) {
             return Err("The audio file contains no complete audio frames.".into());
         }
         let mono_samples = samples
-            .chunks_exact(usize::from(channels))
-            .map(|frame| frame.iter().sum::<f32>() / f32::from(channels))
+            .chunks_exact(usize::from(channels.get()))
+            .map(|frame| frame.iter().sum::<f32>() / f32::from(channels.get()))
             .collect();
         Ok(Self {
             path: path.to_owned(),
@@ -61,19 +61,19 @@ impl AudioFile {
     }
 
     pub(crate) fn sample_rate(&self) -> u32 {
-        self.sample_rate
+        self.sample_rate.get()
     }
 
     pub(crate) fn duration(&self) -> f32 {
-        self.mono_samples.len() as f32 / self.sample_rate as f32
+        self.mono_samples.len() as f32 / self.sample_rate.get() as f32
     }
 }
 
 /// Owns the audio output stream and tracks playback state and position in seconds.
 pub(crate) struct Playback {
-    sink: Option<Sink>,
+    sink: Option<Player>,
     audio: Option<AudioFile>,
-    output: Result<(OutputStream, OutputStreamHandle), String>,
+    output: Result<MixerDeviceSink, String>,
     position: f32,
     source_offset: f32,
     playing: bool,
@@ -84,7 +84,11 @@ impl Playback {
         Self {
             sink: None,
             audio: None,
-            output: OutputStream::try_default()
+            output: DeviceSinkBuilder::open_default_sink()
+                .map(|mut output| {
+                    output.log_on_drop(false);
+                    output
+                })
                 .map_err(|error| format!("Audio output is unavailable: {error}")),
             position: 0.0,
             source_offset: 0.0,
@@ -122,7 +126,7 @@ impl Playback {
             .audio
             .as_ref()
             .ok_or("Choose an audio file before starting playback.")?;
-        let (_, handle) = self.output.as_ref().map_err(Clone::clone)?;
+        let output = self.output.as_ref().map_err(Clone::clone)?;
 
         if let Some(sink) = &self.sink
             && !sink.empty()
@@ -137,16 +141,15 @@ impl Playback {
         } else {
             self.position
         };
-        let start_frame = (position * audio.sample_rate as f32) as usize;
-        let start_offset = start_frame * usize::from(audio.channels);
-        let sink = Sink::try_new(handle)
-            .map_err(|error| format!("Could not start audio output: {error}"))?;
+        let start_frame = (position * audio.sample_rate.get() as f32) as usize;
+        let start_offset = start_frame * usize::from(audio.channels.get());
+        let sink = Player::connect_new(output.mixer());
         sink.append(SamplesBuffer::new(
             audio.channels,
             audio.sample_rate,
             audio.samples[start_offset..].to_vec(),
         ));
-        self.position = start_frame as f32 / audio.sample_rate as f32;
+        self.position = start_frame as f32 / audio.sample_rate.get() as f32;
         self.source_offset = self.position;
         self.sink = Some(sink);
         self.playing = true;
@@ -253,7 +256,7 @@ mod tests {
             Cursor::new(wav(&[16_384, 0, -16_384, 0])),
         )
         .unwrap();
-        assert_eq!(audio.channels, 2);
+        assert_eq!(audio.channels.get(), 2);
         assert_eq!(audio.sample_rate(), 48_000);
         assert_eq!(audio.mono_samples(), &[0.25, -0.25]);
         assert!((audio.duration() - 2.0 / 48_000.0).abs() < f32::EPSILON);

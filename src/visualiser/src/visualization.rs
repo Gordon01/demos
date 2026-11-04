@@ -88,7 +88,7 @@ pub(crate) fn show(
 
 /// Uploads the image into a texture kept in egui memory, skipping unchanged images.
 fn history_texture(ctx: &egui::Context, image: egui::ColorImage) -> egui::TextureId {
-    let id = egui::Id::new("band-history-texture");
+    let id = egui::Id::unique("band-history-texture");
     let options = egui::TextureOptions::NEAREST;
     let cached = ctx
         .data(|data| data.get_temp::<(egui::TextureHandle, std::sync::Arc<egui::ColorImage>)>(id));
@@ -119,10 +119,7 @@ fn history_image<'a>(
                 .map(|intensity| flame_color(*intensity)),
         );
     }
-    egui::ColorImage {
-        size: [HISTORY_LIMIT, height],
-        pixels,
-    }
+    egui::ColorImage::new([HISTORY_LIMIT, height], pixels)
 }
 
 /// Returns texture coordinates for the plot's top-left, top-right, bottom-right and

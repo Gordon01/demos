@@ -29,12 +29,12 @@
           pkgs.libGL
           pkgs.libxkbcommon
           pkgs.wayland
-          pkgs.xorg.libX11
-          pkgs.xorg.libXcursor
-          pkgs.xorg.libXext
-          pkgs.xorg.libXi
-          pkgs.xorg.libXinerama
-          pkgs.xorg.libXrandr
+          pkgs.libx11
+          pkgs.libxcursor
+          pkgs.libxext
+          pkgs.libxi
+          pkgs.libxinerama
+          pkgs.libxrandr
         ];
         postInstall = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isDarwin ''
           app="$out/Applications/Frequency Visualiser.app"

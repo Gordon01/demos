@@ -278,7 +278,8 @@ impl VisualiserApp {
 
 impl eframe::App for VisualiserApp {
     /// Updates playback and active histories before drawing the current frame.
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         let now = Instant::now();
         let delta_seconds = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
@@ -322,20 +323,18 @@ impl eframe::App for VisualiserApp {
             }
         }
 
-        egui::TopBottomPanel::top("window_controls").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if !self.settings_open && ui.button("Open settings").clicked() {
-                    self.settings_open = true;
-                }
-                if !self.visualisation_open && ui.button("Open visualisation").clicked() {
-                    self.visualisation_open = true;
-                }
-            });
+        ui.horizontal(|ui| {
+            if !self.settings_open && ui.button("Open settings").clicked() {
+                self.settings_open = true;
+            }
+            if !self.visualisation_open && ui.button("Open visualisation").clicked() {
+                self.visualisation_open = true;
+            }
         });
-        self.draw_controls(ctx);
+        self.draw_controls(&ctx);
         if self.visualisation_open {
             visualization::show(
-                ctx,
+                &ctx,
                 &mut self.visualisation_open,
                 self.analyzer.bands(),
                 match self.source {

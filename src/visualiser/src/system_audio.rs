@@ -1,16 +1,21 @@
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex, MutexGuard},
-};
+#[cfg(any(target_os = "macos", test))]
+use std::collections::VecDeque;
 
+#[cfg(target_os = "macos")]
+use std::sync::{Arc, Mutex, MutexGuard};
+
+#[cfg(any(target_os = "macos", test))]
 use crate::analysis::FFT_SIZE;
 
+#[cfg(any(target_os = "macos", test))]
 const BUFFER_CAPACITY: usize = 48_000;
 
+#[cfg(any(target_os = "macos", test))]
 struct CaptureBuffer {
     samples: VecDeque<f32>,
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl Default for CaptureBuffer {
     fn default() -> Self {
         Self {
@@ -19,6 +24,7 @@ impl Default for CaptureBuffer {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 impl CaptureBuffer {
     fn push(&mut self, samples: &[f32]) {
         for sample in samples {
@@ -45,6 +51,7 @@ impl CaptureBuffer {
 }
 
 #[derive(Default)]
+#[cfg(target_os = "macos")]
 struct CaptureState {
     buffer: CaptureBuffer,
     error: Option<String>,
@@ -256,6 +263,7 @@ impl SystemAudioCapture {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub(crate) fn clear(&mut self) {
         #[cfg(target_os = "macos")]
         {
